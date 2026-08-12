@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.ruff_cache/
+
+# Rendered output: commit .dot and .svg for the workflows you document; PNGs are
+# rendered on demand and are large binaries that change on every edit.
+*.png
+
+.vscode/
+.idea/
+*.swp
+.DS_Store

@@ -71,12 +71,36 @@ then printf '  ok    scatter cluster emitted inside the if cluster\n'
 else printf '  FAIL  scatter cluster is not inside the if cluster\n'; fail=1
 fi
 
+echo "== named_cases.wdl (scatter over a literal list -> one branch per case)"
+summary="$(python3 "$tool" "${here}/fixtures/named_cases.wdl" -o "$tmp")"
+dot="${tmp}/mutect2Consensus.flow.dot"
+
+has  "tumour branch"                  'label="ig = tumorInputGroup"'
+has  "normal branch"                  'label="ig = normalInputGroup"'
+has  "calls cloned per branch"        'annotate__tumorInputGroup \[label="annotate"\]'
+has  "in-branch dep stays in branch"  '^  annotate__tumorInputGroup -> filter__tumorInputGroup$'
+hasnt "no cross-branch dep"           'annotate__tumorInputGroup -> filter__normalInputGroup'
+has  "both branches feed the join"    '^  filter__normalInputGroup -> combine$'
+# data parallelism must NOT be expanded
+has  "chromosome scatter stays one box" 'label="scatter \(chr in chromosomes\)"'
+hasnt "chromosome scatter not cloned"   'perChrom__chr'
+
+echo "== --expand-cases 0 disables it"
+python3 "$tool" "${here}/fixtures/named_cases.wdl" -o "$tmp" --expand-cases 0 >/dev/null
+if grep -q 'label="ig = tumorInputGroup"' "$dot"; then
+    printf '  FAIL  --expand-cases 0 still expanded\n'; fail=1
+else
+    printf '  ok    --expand-cases 0 leaves one scatter box\n'
+fi
+
 echo "== --check staleness"
-if python3 "$tool" "${here}/fixtures/nesting.wdl" -o "$tmp" --check >/dev/null; then
+if python3 "$tool" "${here}/fixtures/nesting.wdl" -o "$tmp" >/dev/null && \
+   python3 "$tool" "${here}/fixtures/nesting.wdl" -o "$tmp" --check >/dev/null; then
     printf '  ok    fresh .dot passes --check\n'
 else
     printf '  FAIL  fresh .dot failed --check\n'; fail=1
 fi
+dot="${tmp}/nesting.flow.dot"
 echo "// tampered" >> "$dot"
 if python3 "$tool" "${here}/fixtures/nesting.wdl" -o "$tmp" --check >/dev/null 2>&1; then
     printf '  FAIL  --check passed a stale .dot\n'; fail=1

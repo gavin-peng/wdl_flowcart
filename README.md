@@ -30,6 +30,37 @@ Exercised over 186 `.wdl` files in the GSI collection: 122 workflows produced a 
 were task-only files correctly reported as `no workflow block, skipped`, and nothing
 crashed.
 
+## Two kinds of scatter
+
+`scatter` gets used for two different things, and drawing them the same way loses the
+distinction that matters most to a reader.
+
+**Data parallelism.** `scatter (chr in chromosomes)` runs identical work on interchangeable
+shards. One box is the honest picture: the shards differ only in which slice of data they
+touch, and there is nothing to learn from seeing 25 copies.
+
+**Named cases.** `scatter (ig in select_all([tumorInputGroup, normalInputGroup]))` is not
+really parallelism over data; the array is the list of conditions the workflow is
+contrasting. A reader wants to see tumour and normal as separate branches - that is what
+they would draw by hand - even when both traverse identical calls, because the point being
+made is *this workflow processes tumour and normal separately*, and often they diverge
+later.
+
+So a scatter whose collection resolves to an explicit array literal of a few bare
+identifiers is drawn as one branch per element:
+
+```
+scatter (ig in inputGroups)          becomes      [ig = tumorInputGroup]   [ig = normalInputGroup]
+  call annotate                                     call annotate            call annotate
+  call filter                                       call filter              call filter
+```
+
+Calls are cloned per branch, dependencies inside a branch stay inside it, and anything
+downstream fans in from every branch. Control it with `--expand-cases N` (default 4, `0`
+disables). The literal-of-identifiers rule is what keeps chromosome-style scatters as one
+box: a 25-element list of strings, a single-element `select_first`, or a member that is not
+a plain identifier all fail it.
+
 ## Keeping it honest: `--check`
 
 The reason workflow diagrams rot is that nobody regenerates them. `--check` regenerates in
@@ -52,7 +83,8 @@ by one. Even for a pure-WDL workflow, with no other engine involved:
 
 1. **Cardinality is invisible.** A `scatter` is one box whether it fans out 2 ways or 2000.
    Worse, when the collection comes from a task output - `scatter (x in read_lines(prep.out))`
-   - the width is not knowable from the text at all, at any effort.
+   - the width is not knowable from the text at all, at any effort. (The exception is a
+   scatter used to enumerate named cases; see below.)
 
 2. **Branches are drawn, not resolved.** Every `if` appears, so mutually exclusive paths sit
    side by side as though they all run. A workflow with a `mode` input shows every mode's

@@ -113,6 +113,7 @@ def lex(text):
 class Node:
     def __init__(self, alias, callee, imported):
         self.alias, self.callee, self.imported = alias, callee, imported
+        self.display = alias          # differs from alias only for per-case clones
         self.deps = set()
 
 
@@ -219,6 +220,145 @@ def parse(path):
     return wf
 
 
+WRAP = re.compile(r'^\s*(?:select_all|select_first|flatten)\s*\((.*)\)\s*$')
+
+
+def split_top(text):
+    """Split on commas that are not inside brackets."""
+    out, depth, cur = [], 0, ''
+    for ch in text:
+        if ch in '([':
+            depth += 1
+        elif ch in ')]':
+            depth -= 1
+        if ch == ',' and depth == 0:
+            out.append(cur)
+            cur = ''
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(cur)
+    return [x.strip() for x in out]
+
+
+def scatter_cases(expr, decls, cap):
+    """Element names if this scatter enumerates NAMED CASES, else None.
+
+    A scatter over chromosomes is data parallelism: every shard does the same thing to
+    different data, and one box is the honest picture. A scatter over
+    `select_all([tumorInputGroup, normalInputGroup])` is something else - the array is a
+    list of the conditions the workflow is contrasting, and a reader wants to see tumour
+    and normal as separate branches even when they traverse identical calls.
+
+    Telling them apart: only an explicit array literal of a FEW BARE IDENTIFIERS counts.
+    That accepts [tumorInputGroup, normalInputGroup] and rejects a 25-element list of
+    chromosome strings, a single-element select_first, and anything with a non-identifier
+    member such as select_first([controls, []]).
+    """
+    m = re.match(r'\w+\s+in\s+(.*)$', expr.strip(), re.S)
+    if not m:
+        return None
+    coll = m.group(1).strip()
+    for _ in range(4):                       # unwrap select_all(...) etc, and declarations
+        w = WRAP.match(coll)
+        if w:
+            coll = w.group(1).strip()
+            continue
+        if coll in decls:
+            coll = decls[coll].strip()
+            continue
+        break
+    lit = re.match(r'^\[(.*)\]$', coll, re.S)
+    if not lit:
+        return None
+    parts = split_top(lit.group(1))
+    if not 2 <= len(parts) <= cap:
+        return None
+    if not all(re.fullmatch(r'\w+', x) for x in parts):
+        return None
+    return parts
+
+
+def expand_cases(wf, cap):
+    """Replace each named-case scatter with one cluster per case.
+
+    Calls are cloned per branch with suffixed ids so graphviz keeps them distinct, while
+    the visible label stays the original call name. Dependencies WITHIN a branch are
+    rewired to that branch's clones; dependencies crossing the boundary fan out to all of
+    them, since a downstream consumer of a scattered call consumes the whole array.
+    """
+    def aliases_in(block):
+        out = {c.alias for c in block.calls}
+        for ch in block.children:
+            out |= aliases_in(ch)
+        return out
+
+    def clone(block, suffix, inside):
+        nb = Block(block.kind, block.label)
+        for c in block.calls:
+            n = Node(c.alias + suffix, c.callee, c.imported)
+            n.display = c.alias
+            n.deps = {d + suffix if d in inside else d for d in c.deps}
+            nb.calls.append(n)
+            wf.nodes[n.alias] = n
+        for ch in block.children:
+            nb.children.append(clone(ch, suffix, inside))
+        return nb
+
+    def walk(block):
+        new_children = []
+        for child in block.children:
+            walk(child)
+            cases = (scatter_cases(child.label, wf.decls, cap)
+                     if child.kind == 'scatter' else None)
+            if not cases:
+                new_children.append(child)
+                continue
+            inside = aliases_in(child)
+            var = re.match(r'(\w+)\s+in\s', child.label.strip())
+            var = var.group(1) if var else 'x'
+            for case in cases:
+                nb = clone(child, '__' + case, inside)
+                nb.kind, nb.label = 'case', f'{var} = {case}'
+                new_children.append(nb)
+            for a in inside:                        # originals are replaced by the clones
+                wf.nodes.pop(a, None)
+            for n in wf.nodes.values():             # consumers fan out to every branch
+                if n.deps & inside:
+                    n.deps = ((n.deps - inside)
+                              | {d + '__' + c for d in n.deps & inside for c in cases})
+        block.children = new_children
+
+    walk(wf.root)
+
+
+def coalesce(block):
+    """Merge sibling blocks that share a kind and condition, depth first.
+
+    A workflow often opens `if (defined(tumor))` several times at the same scope, once per
+    processing stage. Each is a separate block in the text but they are the same condition,
+    so drawing one cluster each fragments a logical branch into pieces and interleaves it
+    with its neighbours. Merging them puts the whole branch in one box, which is what a
+    reader means by "the tumour path".
+    """
+    merged, seen = [], {}
+    for child in block.children:
+        coalesce(child)
+        key = (child.kind, child.label)
+        if key in seen:
+            target = seen[key]
+            target.calls.extend(child.calls)
+            target.children.extend(child.children)
+        else:
+            seen[key] = child
+            merged.append(child)
+    # a merge can bring together children that are themselves now duplicates
+    for child in merged:
+        if len(child.children) > 1:
+            coalesce(child)
+    block.children = merged
+
+
 def resolve(wf):
     """Map dependency names onto call aliases, following declarations transitively.
 
@@ -290,17 +430,25 @@ def emit(wf, src):
 
     def walk(b, indent='  '):
         for n in b.calls:
-            label = n.alias if n.alias == n.callee else f"{n.alias}\\n({n.callee})"
+            label = (n.display if n.display == n.callee
+                     else f"{n.display}\\n({n.callee})")
             extra = (' color="#9a6fb0" style="filled,rounded,diagonals"'
                      if n.imported else '')
             out.append(f'{indent}{n.alias} [label="{label}"{extra}]')
         for child in b.children:
             ctr[0] += 1
-            fill = ('fillcolor="#fdf3e7" color="#e0a35c" style="filled,rounded"'
-                    if child.kind == 'scatter' else
-                    'fillcolor="#f6f6f6" color="#999999" style="filled,rounded,dashed"')
+            if child.kind == 'scatter':
+                fill = 'fillcolor="#fdf3e7" color="#e0a35c" style="filled,rounded"'
+                lab = f'scatter ({esc(child.label)})'
+            elif child.kind == 'case':
+                # a named branch of a scatter over a small literal list
+                fill = 'fillcolor="#eaf5ea" color="#5f9a5f" style="filled,rounded"'
+                lab = esc(child.label)
+            else:
+                fill = 'fillcolor="#f6f6f6" color="#999999" style="filled,rounded,dashed"'
+                lab = f'if ({esc(child.label)})'
             out.append(f'{indent}subgraph cluster_{ctr[0]} {{')
-            out.append(f'{indent}  label="{child.kind} ({esc(child.label)})"; {fill};')
+            out.append(f'{indent}  label="{lab}"; {fill};')
             walk(child, indent + '  ')
             out.append(f'{indent}}}')
 
@@ -355,7 +503,10 @@ def process(path, args):
     if not wf.name:
         print(f"{path}: no workflow block, skipped", file=sys.stderr)
         return True
+    coalesce(wf.root)
     resolve(wf)
+    if args.expand_cases:
+        expand_cases(wf, args.expand_cases)
     dot = emit(wf, path)
 
     base = os.path.dirname(os.path.abspath(path))
@@ -402,6 +553,10 @@ def main():
     ap.add_argument('--png', action='store_true')
     ap.add_argument('--check', action='store_true',
                     help='exit 1 if a committed .dot is stale; writes nothing')
+    ap.add_argument('--expand-cases', type=int, default=4, metavar='N',
+                    help='draw a scatter over a literal list of up to N named items as one '
+                         'branch per item (default 4; 0 disables). Chromosome-style data '
+                         'parallelism is never expanded.')
     ap.add_argument('-v', '--verbose', action='store_true',
                     help='list dependency names that could not be resolved')
     ap.add_argument('--version', action='version', version=__version__)

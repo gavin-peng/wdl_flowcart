@@ -6,6 +6,7 @@ Generate a structural flowchart for a WDL workflow, straight from the WDL text.
 wdl_flowchart.py myWorkflow.wdl --svg
 wdl_flowchart.py --all ~/dev/workflow --svg      # sweep a tree of repos
 wdl_flowchart.py myWorkflow.wdl --check          # fail if the committed .dot is stale
+wdl_flowchart.py myWorkflow.wdl --hide extractName --svg   # leave plumbing tasks out
 ```
 
 Writes `<workflow>.flow.dot` next to the WDL, or into a sibling `docs/` if one exists.
@@ -60,6 +61,76 @@ downstream fans in from every branch. Control it with `--expand-cases N` (defaul
 disables). The literal-of-identifiers rule is what keeps chromosome-style scatters as one
 box: a 25-element list of strings, a single-element `select_first`, or a member that is not
 a plain identifier all fail it.
+
+## Hiding plumbing calls
+
+You give the tool a **list of task names** to leave out of the chart: the tasks that are
+technical detail rather than steps a reader follows. The tool cannot choose them for you -
+a merge task is the point of one workflow and an implementation detail of another - so the
+list is yours to write.
+
+There are two ways to supply that task list.
+
+### 1. On the command line, for a single run
+
+```bash
+wdl_flowchart.py myWorkflow.wdl --svg --hide <task1, task2...>
+```
+
+Repeat `--hide` or separate names with commas.
+
+### 2. In a file beside the WDL, used automatically every time
+
+Create a file named `<workflow>.flow.hide` next to the WDL, containing one task name per
+line. The tool looks for it on its own - there is no flag to remember, and `--check` reads
+it too, so a pre-commit hook regenerates exactly the chart you did:
+
+```bash
+cd /path/to/myWorkflow
+cat > myWorkflow.flow.hide <<'EOF'
+# one task name per line; blank lines and # comments ignored
+extractName
+splitPonByChromosome
+EOF
+
+wdl_flowchart.py myWorkflow.wdl --svg        # no --hide needed, the file is found
+```
+
+This is the one to use for a workflow whose chart you will regenerate more than once. Both
+ways can be combined: `--hide` adds to whatever the file already lists.
+
+### Options
+
+| option | effect |
+| --- | --- |
+| *(none)* | reads `<workflow>.flow.hide` beside the WDL, if that file exists |
+| `--hide NAME[,NAME...]` | hide these too, just for this run; repeatable |
+| `--hide-file FILE` | read the list from `FILE` instead of the default location |
+| `--show-all` | ignore the file and `--hide`; draw every call |
+
+### Which calls a name matches
+
+- a **task** name hides every call of that task
+- a **call alias** hides only that one call
+
+In `wisp`, `mergeAmberChromosomes` is a task called twice, aliased `amberPrimary` and
+`amberPlasma`; listing the task name hides both, listing `amberPrimary` hides only that
+one. List the task name when you mean "this kind of step is never interesting".
+
+### Reading the output
+
+```
+wisp.flow.dot  (12 calls, 15 edges, 6 hidden, 2 unresolved refs)
+```
+
+The chart carries a `not shown, technical detail:` note listing the hidden tasks, and the
+same list is written into the `.dot` header, so a filtered diagram is never mistaken for a
+complete one. A name that matches nothing prints `nothing to hide named 'x'` on stderr -
+that is your warning that the list has drifted after a task was renamed.
+
+Hidden calls are **contracted, not deleted**: `a -> hidden -> b` is drawn as `a -> b`, and
+chains of hidden calls collapse in one step, so the reachability you read off the picture
+still holds.
 
 ## Keeping it honest: `--check`
 

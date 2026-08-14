@@ -22,6 +22,15 @@ The cluster colour says which kind of block it is:
 A call box with a hatched purple border is a call into an imported WDL, whose internals are
 not shown.
 
+The `workflow inputs` and `workflow outputs` notes are joined by faint dashed edges. To
+keep them from becoming a hairball they are not drawn to every call that happens to read an
+input; an input edge means *this call can start with nothing else having run*. That covers
+a call with no dependencies at all, and a call whose only dependencies are optional - all
+of them inside an `if` that does not also contain the call, so there is a run where none of
+them happened and the value comes from an input instead. That second case is the
+`select_first([optionalCall.out, someInput])` idiom, and its edge is the path taken when
+the condition is false.
+
 Only graphviz (`dot`) is needed to render, and nothing at all to produce the `.dot`.
 
 ## Why not `womtool graph`

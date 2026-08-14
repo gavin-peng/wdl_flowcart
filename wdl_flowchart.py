@@ -333,19 +333,25 @@ def expand_cases(wf, cap):
 
 
 def coalesce(block):
-    """Merge sibling blocks that share a kind and condition, depth first.
+    """Merge sibling `if` blocks that share a condition, depth first.
 
     A workflow often opens `if (defined(tumor))` several times at the same scope, once per
     processing stage. Each is a separate block in the text but they are the same condition,
     so drawing one cluster each fragments a logical branch into pieces and interleaves it
     with its neighbours. Merging them puts the whole branch in one box, which is what a
     reader means by "the tumour path".
+
+    Scatters are NOT merged, even when their expressions are identical. Two
+    `scatter (idx in range(length(chromosomes)))` blocks are two separate parallel stages
+    that happen to shard the same way - in wisp one runs amber over the primary and the
+    other over the plasma - and putting them in one box claims a relationship the workflow
+    does not have. An `if` repeats a condition; a scatter repeats a shape.
     """
     merged, seen = [], {}
     for child in block.children:
         coalesce(child)
         key = (child.kind, child.label)
-        if key in seen:
+        if child.kind == 'if' and key in seen:
             target = seen[key]
             target.calls.extend(child.calls)
             target.children.extend(child.children)

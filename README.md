@@ -13,6 +13,15 @@ Writes `<workflow>.flow.dot` next to the WDL, or into a sibling `docs/` if one e
 `--svg` / `--png` render it with graphviz. Calls are boxes, `scatter` and `if` are nested
 clusters labelled with their real expressions, and edges are data dependencies.
 
+The cluster colour says which kind of block it is:
+
+- **orange** - a `scatter`, drawn as one box for all its shards
+- **green** - one named case of a scatter that was expanded into branches (see below)
+- **grey, dashed** - an `if`, labelled with its condition
+
+A call box with a hatched purple border is a call into an imported WDL, whose internals are
+not shown.
+
 Only graphviz (`dot`) is needed to render, and nothing at all to produce the `.dot`.
 
 ## Why not `womtool graph`

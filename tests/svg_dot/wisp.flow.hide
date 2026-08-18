@@ -1,0 +1,10 @@
+# Calls left out of wisp.flow.dot as technical detail, one name per line.
+# Read by wdl_flowchart.py; dependencies are spliced through a hidden call, so
+# amberPrimaryChr -> amberPrimary -> mergeAmber is drawn as amberPrimaryChr -> mergeAmber.
+#
+# A name here matches by TASK name (every call of it) or by call alias (just that one).
+# Regenerate after editing:  wdl_flowchart.py wisp.wdl --svg
+
+extractName             # pulls a sample name out of a BAM header; 3 calls, no science
+splitPonByChromosome    # shards the panel of normals for the amber scatter
+mergeAmberChromosomes   # merges those shards back (aliased amberPrimary / amberPlasma)
